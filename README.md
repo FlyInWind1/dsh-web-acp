@@ -21,7 +21,7 @@ ACP 客户端通过 stdio 连接本程序；程序再把请求转发到 web 宿�
 ## 安装
 
 ```bash
-git clone https://github.com/<your-org>/dsh-web-acp.git
+git clone https://github.com/FlyInWind1/dsh-web-acp.git
 cd dsh-web-acp
 npm ci
 ```

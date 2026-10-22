@@ -4,6 +4,14 @@
   "description": "ACP bridge for DeepSeek Harness dsh web — use the same session from an ACP client and the browser",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FlyInWind1/dsh-web-acp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/FlyInWind1/dsh-web-acp/issues"
+  },
+  "homepage": "https://github.com/FlyInWind1/dsh-web-acp#readme",
   "bin": "./src/bin.js",
   "scripts": {
     "start": "node src/bin.js",
