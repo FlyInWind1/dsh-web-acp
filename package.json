@@ -1,0 +1,19 @@
+{
+  "name": "dsh-web-acp",
+  "version": "0.1.0",
+  "description": "ACP bridge for DeepSeek Harness dsh web — use the same session from an ACP client and the browser",
+  "type": "module",
+  "license": "MIT",
+  "bin": "./src/bin.js",
+  "scripts": {
+    "start": "node src/bin.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
+    "ws": "^8.18.3"
+  }
+}
