@@ -11,7 +11,7 @@ import { createWebClient } from "./web.js";
 const web = createWebClient({
   base: process.env.DSH_WEB_BASE,
   cookie: process.env.DSH_WEB_COOKIE,
-  unit: process.env.DSH_WEB_UNIT,
+  systemdUnit: process.env.DSH_WEB_SYSTEMD_UNIT,
 });
 
 const stream = ndJsonStream(

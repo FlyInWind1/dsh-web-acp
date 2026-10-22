@@ -70,13 +70,13 @@ class StreamQueue {
  */
 export class WebClient {
   /**
-   * @param {{ base?: string, cookie?: string, unit?: string, readJournal?: typeof readJournal }} options
+   * @param {{ base?: string, cookie?: string, systemdUnit?: string, readJournal?: typeof readJournal }} options
    */
   constructor(options = {}) {
     this.pinnedBase = options.base;
     this.base = options.base ?? "http://127.0.0.1:3080";
     this.cookie = options.cookie;
-    this.unit = options.unit ?? "dsh-web.service";
+    this.systemdUnit = options.systemdUnit ?? "dsh-web.service";
     this.readJournal = options.readJournal ?? readJournal;
     /** @type {WebSocket | null} */
     this.socket = null;
@@ -87,7 +87,7 @@ export class WebClient {
 
   async ensureCookie(force = false) {
     if (this.cookie && !force) return this.cookie;
-    const journal = await this.readJournal(this.unit);
+    const journal = await this.readJournal(this.systemdUnit);
     const launch = parseLaunch(journal);
     const base = this.pinnedBase ?? `http://127.0.0.1:${launch.port}`;
     this.base = base;
@@ -271,11 +271,11 @@ export class WebClient {
   }
 }
 
-/** @param {{ base?: string, cookie?: string, unit?: string }} [env] */
+/** @param {{ base?: string, cookie?: string, systemdUnit?: string }} [env] */
 export function createWebClient(env = {}) {
   return new WebClient({
     base: env.base,
     cookie: env.cookie,
-    unit: env.unit,
+    systemdUnit: env.systemdUnit,
   });
 }

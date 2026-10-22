@@ -36,7 +36,7 @@ npm ci
 |------|------|
 | `DSH_WEB_BASE` | Web API 基址，例如 `http://127.0.0.1:3080`。未设置时默认 `http://127.0.0.1:3080`；若日志里是 `--public-url` 且无端口，程序会用日志中的 token，HTTP 仍走回环地址。 |
 | `DSH_WEB_COOKIE` | 可选。已有效的 `dsh-auth-*=…` Cookie（`name=value`）。设置后跳过 journal 换票。 |
-| `DSH_WEB_UNIT` | 可选。`journalctl --user -u` 的单元名，默认 `dsh-web.service`。用于从本次启动日志解析 launch token。 |
+| `DSH_WEB_SYSTEMD_UNIT` | 可选。`journalctl --user -u` 的单元名，默认 `dsh-web.service`。用于从本次启动日志解析 launch token。 |
 
 ### ACP 客户端（JetBrains `acp.json`）
 
@@ -61,7 +61,7 @@ JetBrains IDE 读取 `~/.jetbrains/acp.json`。在 `agent_servers` 里登记本�
       "command": "/绝对路径/dsh-web-acp/src/bin.js",
       "env": {
         "DSH_WEB_BASE": "http://127.0.0.1:3080",
-        "DSH_WEB_UNIT": "dsh-web.service"
+        "DSH_WEB_SYSTEMD_UNIT": "dsh-web.service"
       }
     }
   }
