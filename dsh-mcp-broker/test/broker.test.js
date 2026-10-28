@@ -96,9 +96,12 @@ test("handler attaches per agent, isolates sessions, detaches on dispose", async
   assert.equal(a.mounted.length, 1);
   assert.equal(a.mounted[0].config.serverName, "idea");
 
+  // 重复 add 同名 = 替换：新的挂上、旧的释放，不报错。
   const dup = await handler({ agent: a, rawInput: "add idea --command /opt/mcp" });
-  assert.equal(dup.kind, "error");
-  assert.match(dup.text, /already attached/);
+  assert.equal(dup.kind, "success");
+  assert.equal(a.mounted.length, 2);
+  assert.equal(a.mounted[0].disposed, true);
+  assert.equal(a.mounted[1].disposed, false);
 
   assert.equal((await handler({ agent: b, rawInput: "add idea --command /opt/mcp" })).kind, "success");
   const listA = await handler({ agent: a, rawInput: "list" });

@@ -191,11 +191,17 @@ async function apply(ctx) {
         return { kind: "success", text: `MCP server "${parsed.name}" detached.` };
       }
       const mountKey = key(agentId, parsed.name);
-      if (mounted.has(mountKey)) return { kind: "error", text: `MCP server "${parsed.name}" is already attached to this session` };
       try {
         const client = await mcpClient();
         const fiber = await agent.ctx.plugin(client, parsed.config);
+        const previous = mounted.get(mountKey);
         mounted.set(mountKey, { dispose: () => fiber.dispose() });
+        // 重复 add 同名 = 替换：先挂新的成功再拆旧的，失败不丢原挂载。
+        if (previous) {
+          try {
+            await previous.dispose();
+          } catch {}
+        }
         return { kind: "success", text: `MCP server "${parsed.name}" attached to this session.` };
       } catch (error) {
         return { kind: "error", text: `attach "${parsed.name}" failed: ${error instanceof Error ? error.message : String(error)}` };
