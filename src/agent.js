@@ -7,6 +7,7 @@ import { AGENT_METHODS, CLIENT_METHODS, RequestError } from "@agentclientprotoco
 import { watchApprovals } from "./approval.js";
 import { createDrive, promptContent } from "./drive.js";
 import { replayHistory } from "./history.js";
+import { attachMcpServers } from "./mcp.js";
 import { applyConfig, configOptions, currentSelection } from "./models.js";
 
 /**
@@ -73,6 +74,12 @@ export function attach(app, web) {
     };
   }
 
+  async function mountMcp(sessionId, mcpServers, cwd) {
+    if (!mcpServers?.length) return;
+    const { failures } = await attachMcpServers(web, sessionId, mcpServers, cwd);
+    if (failures.length > 0) console.error(`mcp attach: ${failures.join("; ")}`);
+  }
+
   async function sessionConfig(sessionId) {
     let projection = null;
     try {
@@ -105,6 +112,7 @@ export function attach(app, web) {
       authMethods: [],
       agentCapabilities: {
         loadSession: true,
+        mcpCapabilities: { http: true },
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
         sessionCapabilities: { list: {}, resume: {}, close: {} },
       },
@@ -112,6 +120,7 @@ export function attach(app, web) {
     .onRequest(AGENT_METHODS.session_new, async ({ params }) => {
       const value = await web.call("session/create", { cwd: params.cwd });
       remember(value.sessionId, params.cwd);
+      await mountMcp(value.sessionId, params.mcpServers, params.cwd);
       return { sessionId: value.sessionId, ...await sessionConfig(value.sessionId) };
     })
     .onRequest(AGENT_METHODS.session_list, async ({ params }) => {
@@ -137,11 +146,13 @@ export function attach(app, web) {
     })
     .onRequest(AGENT_METHODS.session_load, async ({ params, client }) => {
       const record = remember(params.sessionId, params.cwd);
+      await mountMcp(params.sessionId, params.mcpServers, params.cwd);
       await replay(record, params.sessionId, client);
       return sessionConfig(params.sessionId);
     })
     .onRequest(AGENT_METHODS.session_resume, async ({ params, client }) => {
       const record = remember(params.sessionId, params.cwd);
+      await mountMcp(params.sessionId, params.mcpServers, params.cwd);
       await replay(record, params.sessionId, client);
       return sessionConfig(params.sessionId);
     })

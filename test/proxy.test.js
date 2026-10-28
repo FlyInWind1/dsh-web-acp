@@ -342,6 +342,36 @@ test("approval request becomes a client permission dialog", async () => {
   assert.deepEqual(host.answered.outcome, { kind: "result", value: "allowed-once" });
 });
 
+test("session/new attaches mcpServers through the broker command", async () => {
+  const host = await fakeHost();
+  const web = new WebClient({ base: host.base, cookie: "dsh-auth-test=ok" });
+  try {
+    await client().connectWith(attach(agent({ name: "dsh-web-acp" }), web), async (ctx) => {
+      await ctx.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+      await ctx.request(AGENT_METHODS.session_new, {
+        cwd: "/tmp/proj",
+        mcpServers: [
+          { name: "idea", command: "/opt/idea/mcp", args: ["--stdio"], env: [{ name: "TOKEN", value: "t" }] },
+          { name: "gw", type: "http", url: "http://127.0.0.1:9/mcp", headers: [{ name: "X-Key", value: "k" }] },
+        ],
+      });
+    });
+  } finally {
+    web.closeSocket();
+    await host.close();
+  }
+  assert.equal(host.executedLines.length, 2);
+  const [stdio, http] = host.executedLines.map((line) => JSON.parse(line.slice("/mcp add ".length)));
+  assert.deepEqual(stdio, {
+    name: "idea",
+    transport: { command: "/opt/idea/mcp", args: ["--stdio"], env: { TOKEN: "t" }, cwd: "/tmp/proj" },
+  });
+  assert.deepEqual(http, {
+    name: "gw",
+    transport: { type: "streamable-http", url: "http://127.0.0.1:9/mcp", headers: { "X-Key": "k" } },
+  });
+});
+
 test("set_mode drives the host /plan command", async () => {
   const host = await fakeHost();
   const web = new WebClient({ base: host.base, cookie: "dsh-auth-test=ok" });
