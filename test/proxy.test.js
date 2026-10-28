@@ -17,7 +17,7 @@ import { WebClient } from "../src/web.js";
 
 test("exchangeCookie keeps the name=value pair from a 302", async () => {
   const server = http.createServer((req, res) => {
-    assert.equal(req.url, "/connect?token=abc&interactions=answer");
+    assert.equal(req.url, "/connect?token=abc&interactions=none");
     res.writeHead(302, {
       location: "./api/remote.mux",
       "set-cookie": "dsh-auth-test=signed; Path=/; HttpOnly; SameSite=Strict",

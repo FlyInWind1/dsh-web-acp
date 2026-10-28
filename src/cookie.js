@@ -30,10 +30,11 @@ export function parseLaunch(journal) {
 
 /** @param {string} unit */
 export async function readJournal(unit) {
+  // `-I` 只留本次启动的日志，`-g` 再过滤出含 token 的行 → 1 行。
   const { stdout } = await execFileAsync(
     "journalctl",
-    ["--user", "-u", unit, "-n", "400", "--no-pager"],
-    { encoding: "utf8", maxBuffer: 2 * 1024 * 1024 },
+    ["--user", "-u", unit, "-I", "-g", "dsh web: ", "--no-pager"],
+    { encoding: "utf8", maxBuffer: 1 * 1024 * 1024 },
   );
   return stdout;
 }
@@ -47,7 +48,7 @@ export async function readJournal(unit) {
 export async function exchangeCookie(base, token) {
   const url = new URL("/connect", base);
   url.searchParams.set("token", token);
-  url.searchParams.set("interactions", "answer");
+  url.searchParams.set("interactions", "none");
   const response = await fetch(url, { redirect: "manual" });
   const raw = response.headers.get("set-cookie") ?? "";
   if (response.status !== 302 || !raw) {
