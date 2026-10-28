@@ -161,6 +161,7 @@ test("ACP prompt round-trip forwards one web turn", async () => {
   const host = await fakeHost();
   const web = new WebClient({ base: host.base, cookie: "dsh-auth-test=ok" });
   const updates = [];
+  let newId = "";
   const app = client().onNotification(CLIENT_METHODS.session_update, ({ params }) => {
     updates.push(params.update);
   });
@@ -173,7 +174,9 @@ test("ACP prompt round-trip forwards one web turn", async () => {
         cwd: "/tmp/proj",
         mcpServers: [],
       });
-      assert.equal(created.sessionId, "session-1");
+      newId = created.sessionId;
+      assert.match(created.sessionId, /^session-[0-9a-f]{8}-[0-9a-f]{4}-/);
+      assert.equal(host.created, undefined); // 惰性：session/new 不在宿主建档
       assert.equal(created.modes.currentModeId, "default");
       assert.deepEqual(created.modes.availableModes.map((mode) => mode.id), ["default", "plan"]);
       const listed = await ctx.request(AGENT_METHODS.session_list, {});
@@ -198,17 +201,21 @@ test("ACP prompt round-trip forwards one web turn", async () => {
     web.closeSocket();
     await host.close();
   }
+  assert.equal(host.created, newId, "prompt 触发了惰性建档");
   assert.equal(host.prompt?.mode, "queue");
   assert.equal(host.prompt?.content[0].text, "hi");
   assert.equal(host.prompt?.payloadShape, "args.request");
   assert.equal(host.listPayloadShape, "args._request");
+  // 惰性建档：prompt 触发 materialize 后补发一次 config_option_update，再是本轮内容。
   assert.deepEqual(updates.map((update) => update.sessionUpdate), [
+    "config_option_update",
     "agent_message_chunk",
     "tool_call",
     "tool_call_update",
   ]);
-  assert.equal(updates[0].content.text, "hello");
-  assert.equal(updates[2].content[0].content.text, "file");
+  assert.equal(updates[0].configOptions.find((option) => option.id === "model").currentValue, modelValue("buddy", "deepseek-v4-flash"));
+  assert.equal(updates[1].content.text, "hello");
+  assert.equal(updates[3].content[0].content.text, "file");
 });
 
 test("session/load replays older pages before the live window", async () => {
@@ -318,8 +325,9 @@ test("selecting a model forwards session/selectModel", async () => {
 test("approval request becomes a client permission dialog", async () => {
   const host = await fakeHost();
   const web = new WebClient({ base: host.base, cookie: "dsh-auth-test=ok" });
+  let newId = "";
   const app = client().onRequest(CLIENT_METHODS.session_request_permission, ({ params }) => {
-    assert.equal(params.sessionId, "session-1");
+    assert.equal(params.sessionId, newId);
     assert.equal(params.toolCall.toolCallId, "call-9");
     assert.equal(params.options[0].kind, "allow_once");
     assert.equal(params.options[1].kind, "reject_once");
@@ -328,9 +336,10 @@ test("approval request becomes a client permission dialog", async () => {
   try {
     await app.connectWith(attach(agent({ name: "dsh-web-acp" }), web), async (ctx) => {
       await ctx.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
-      await ctx.request(AGENT_METHODS.session_new, { cwd: "/tmp/proj", mcpServers: [] });
+      const created = await ctx.request(AGENT_METHODS.session_new, { cwd: "/tmp/proj", mcpServers: [] });
+      newId = created.sessionId;
       await host.eventsReady;
-      host.ask({ toolName: "bash", callId: "call-9", reason: "run echo" });
+      host.ask({ toolName: "bash", callId: "call-9", reason: "run echo" }, newId);
       await host.answerWait;
     });
   } finally {
@@ -342,25 +351,31 @@ test("approval request becomes a client permission dialog", async () => {
   assert.deepEqual(host.answered.outcome, { kind: "result", value: "allowed-once" });
 });
 
-test("session/new attaches mcpServers through the broker command", async () => {
+test("session/new defers mcpServers attach until the first prompt", async () => {
   const host = await fakeHost();
   const web = new WebClient({ base: host.base, cookie: "dsh-auth-test=ok" });
   try {
     await client().connectWith(attach(agent({ name: "dsh-web-acp" }), web), async (ctx) => {
       await ctx.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
-      await ctx.request(AGENT_METHODS.session_new, {
+      const created = await ctx.request(AGENT_METHODS.session_new, {
         cwd: "/tmp/proj",
         mcpServers: [
           { name: "idea", command: "/opt/idea/mcp", args: ["--stdio"], env: [{ name: "TOKEN", value: "t" }] },
           { name: "gw", type: "http", url: "http://127.0.0.1:9/mcp", headers: [{ name: "X-Key", value: "k" }] },
         ],
       });
+      assert.equal(host.executedLines.length, 0); // 惰性：没 prompt 就不碰宿主
+      await ctx.request(AGENT_METHODS.session_prompt, {
+        sessionId: created.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      });
     });
   } finally {
     web.closeSocket();
     await host.close();
   }
-  assert.equal(host.executedLines.length, 3);
+  assert.equal(host.executedLines.filter((line) => line.startsWith("/mcp add")).length, 2);
+  assert.ok(host.executedLines.includes("/permission")); // 建档后补查权限状态
   const [stdio, http] = host.executedLines
     .filter((line) => line.startsWith("/mcp add"))
     .map((line) => JSON.parse(line.slice("/mcp add ".length)));
@@ -377,19 +392,24 @@ test("session/new attaches mcpServers through the broker command", async () => {
 test("permission preset is a config option and switches via /permission", async () => {
   const host = await fakeHost();
   const web = new WebClient({ base: host.base, cookie: "dsh-auth-test=ok" });
+  const updates = [];
+  const app = client().onNotification(CLIENT_METHODS.session_update, ({ params }) => {
+    updates.push(params.update);
+  });
   try {
-    await client().connectWith(attach(agent({ name: "dsh-web-acp" }), web), async (ctx) => {
+    await app.connectWith(attach(agent({ name: "dsh-web-acp" }), web), async (ctx) => {
       await ctx.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
       const created = await ctx.request(AGENT_METHODS.session_new, { cwd: "/tmp/proj", mcpServers: [] });
-      const permission = created.configOptions.find((option) => option.id === "permission");
-      assert.equal(permission.currentValue, "workspace-write");
-      assert.deepEqual(permission.options.map((option) => option.value), ["read-only", "workspace-write", "danger-full-access", "auto"]);
+      // 惰性：未建档的会话没有宿主权限状态可查。
+      assert.equal(created.configOptions.find((option) => option.id === "permission"), undefined);
       const updated = await ctx.request(AGENT_METHODS.session_set_config_option, {
         sessionId: created.sessionId,
         configId: "permission",
         value: "danger-full-access",
       });
-      assert.equal(updated.configOptions.find((option) => option.id === "permission").currentValue, "danger-full-access");
+      const permission = updated.configOptions.find((option) => option.id === "permission");
+      assert.equal(permission.currentValue, "danger-full-access");
+      assert.deepEqual(permission.options.map((option) => option.value), ["read-only", "workspace-write", "danger-full-access", "auto"]);
     });
   } finally {
     web.closeSocket();
@@ -454,12 +474,12 @@ function fakeHost(options = {}) {
     answerWait: new Promise((resolve) => {
       resolveAnswer = resolve;
     }),
-    ask(request) {
+    ask(request, agentId = "session-1") {
       state.sendEvent?.({
         type: "waterfall",
         event: "approval/request",
         eventId: "event-1",
-        agentId: "session-1",
+        agentId,
         request,
       });
     },
@@ -510,7 +530,7 @@ function fakeHost(options = {}) {
       } else if (method === "commands/execute") {
         // 宿主契约：commands/execute 的参数是顶层 agentId/line/submittedAttachments。
         const args = body?.payload?.args;
-        if (args?.agentId !== "session-1" || typeof args?.line !== "string"
+        if (typeof args?.agentId !== "string" || !args.agentId || typeof args?.line !== "string"
           || !Array.isArray(args.submittedAttachments) || request) {
           res.writeHead(400);
           res.end("bad envelope");
@@ -559,7 +579,11 @@ function fakeHost(options = {}) {
         res.writeHead(400);
         res.end("bad envelope");
         return;
-      } else if (method === "session/create") value = { sessionId: "session-1" };
+      } else if (method === "session/create") {
+        // 惰性建档：代理预分配的 sessionId 会被宿主按此 identity 建档并回显。
+        state.created = request.sessionId ?? "session-1";
+        value = { sessionId: state.created };
+      }
       else if (method === "session/prompt") {
         state.prompt = { ...request, payloadShape: "args.request" };
         replyTurn(follows, request.requestId);

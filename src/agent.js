@@ -16,7 +16,7 @@ import { parsePermissionOutput, permissionOption } from "./permissions.js";
  * @param {import("./web.js").WebClient} web
  */
 export function attach(app, web) {
-  /** @type {Map<string, { cwd: string, feed: Feed | null, replayed: boolean, modeId?: string }>} */
+  /** @type {Map<string, { cwd: string, feed: Feed | null, replayed: boolean, modeId?: string, materialized: boolean, mcpServers?: Array }>} */
   const sessions = new Map();
 
   function remember(sessionId, cwd) {
@@ -25,9 +25,43 @@ export function attach(app, web) {
       existing.cwd = cwd || existing.cwd;
       return existing;
     }
-    const created = { cwd, feed: null, replayed: false };
+    const created = { cwd, feed: null, replayed: false, materialized: true };
     sessions.set(sessionId, created);
     return created;
+  }
+
+  /**
+   * 惰性建档：宿主会话在首次"会话级写操作"（prompt / set_mode / 选模型 / 挂载）
+   * 时才创建。IDEA 开了又关的聊天在宿主里零足迹，不攒空白会话。
+   * sessionId 由代理预分配（与宿主 mint 格式一致）；宿主对不存在的 id 会按此
+   * identity 建档，对已存在的空白会话则复用。
+   */
+  async function materialize(sessionId, client) {
+    const record = sessions.get(sessionId);
+    if (!record || record.materialized) return;
+    if (record.materializing) return record.materializing;
+    record.materializing = (async () => {
+      await web.call("session/create", { cwd: record.cwd, sessionId });
+      record.materialized = true;
+      if (record.mcpServers?.length) {
+        await mountMcp(sessionId, record.mcpServers, record.cwd);
+        record.mcpServers = undefined;
+      }
+      if (client) {
+        const options = await allConfigOptions(sessionId).catch(() => []);
+        if (options.length > 0) {
+          await client.notify(CLIENT_METHODS.session_update, {
+            sessionId,
+            update: { sessionUpdate: "config_option_update", configOptions: options },
+          }).catch(() => {});
+        }
+      }
+    })();
+    try {
+      await record.materializing;
+    } finally {
+      record.materializing = void 0;
+    }
   }
 
   function ensureFeed(record, sessionId, client) {
@@ -93,6 +127,8 @@ export function attach(app, web) {
   }
 
   async function permissionState(sessionId) {
+    // 未建档的惰性会话没有宿主状态可查；materialize 后通过 config_option_update 补发。
+    if (!sessions.get(sessionId)?.materialized) return null;
     try {
       return parsePermissionOutput(await runPermission(sessionId));
     } catch (error) {
@@ -148,10 +184,11 @@ export function attach(app, web) {
       },
     }))
     .onRequest(AGENT_METHODS.session_new, async ({ params }) => {
-      const value = await web.call("session/create", { cwd: params.cwd });
-      remember(value.sessionId, params.cwd);
-      await mountMcp(value.sessionId, params.mcpServers, params.cwd);
-      return { sessionId: value.sessionId, ...await sessionConfig(value.sessionId) };
+      // 惰性：先预分配 id 并本地记账，宿主建档推迟到首次写操作。
+      const sessionId = `session-${crypto.randomUUID()}`;
+      const record = { cwd: params.cwd, feed: null, replayed: false, materialized: false, mcpServers: params.mcpServers };
+      sessions.set(sessionId, record);
+      return { sessionId, ...await sessionConfig(sessionId) };
     })
     .onRequest(AGENT_METHODS.session_list, async ({ params }) => {
       const value = await web.callArgs("session/list", {
@@ -191,6 +228,7 @@ export function attach(app, web) {
         throw RequestError.invalidParams(void 0, `unknown mode: ${params.modeId}`);
       }
       const record = remember(params.sessionId, "");
+      await materialize(params.sessionId);
       // 宿主端点参数是顶层 agentId/line/submittedAttachments（无 request 包装）。
       await web.callArgs("commands/execute", {
         agentId: params.sessionId,
@@ -207,6 +245,8 @@ export function attach(app, web) {
       return {};
     })
     .onRequest(AGENT_METHODS.session_set_config_option, async ({ params }) => {
+      const record = remember(params.sessionId, "");
+      await materialize(params.sessionId);
       if (params.configId === "permission") {
         if (typeof params.value !== "string") {
           throw RequestError.invalidParams(void 0, "permission requires a select value");
@@ -230,6 +270,7 @@ export function attach(app, web) {
     })
     .onRequest(AGENT_METHODS.session_prompt, async ({ params, client, signal }) => {
       const record = remember(params.sessionId, "");
+      await materialize(params.sessionId, client);
       const feed = ensureFeed(record, params.sessionId, client);
       await feed.ready;
       const requestId = crypto.randomUUID();
