@@ -1,0 +1,29 @@
+{
+  "name": "dsh-mcp-broker",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Per-session MCP server attach/detach for external ACP bridges: exposes a /mcp host command that mounts dsh-mcp-client instances under a live agent's scope.",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/",
+    "dsh.bundle.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./dsh.bundle.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-mcp-client": ">=0.2.1-rc.4 <0.3"
+  },
+  "license": "MIT"
+}
