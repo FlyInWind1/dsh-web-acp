@@ -48,7 +48,9 @@ export async function readJournal(unit) {
 export async function exchangeCookie(base, token) {
   const url = new URL("/connect", base);
   url.searchParams.set("token", token);
-  url.searchParams.set("interactions", "none");
+  // 必须是 answer：批准转发用的 $events 流要求 cookie 以 interactions=answer 签发，
+  // none 会让 approval watch 报 "forwarded Remote events require interactions=answer"。
+  url.searchParams.set("interactions", "answer");
   const response = await fetch(url, { redirect: "manual" });
   const raw = response.headers.get("set-cookie") ?? "";
   if (response.status !== 302 || !raw) {

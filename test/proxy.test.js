@@ -17,7 +17,7 @@ import { WebClient } from "../src/web.js";
 
 test("exchangeCookie keeps the name=value pair from a 302", async () => {
   const server = http.createServer((req, res) => {
-    assert.equal(req.url, "/connect?token=abc&interactions=none");
+    assert.equal(req.url, "/connect?token=abc&interactions=answer");
     res.writeHead(302, {
       location: "./api/remote.mux",
       "set-cookie": "dsh-auth-test=signed; Path=/; HttpOnly; SameSite=Strict",
@@ -360,8 +360,10 @@ test("session/new attaches mcpServers through the broker command", async () => {
     web.closeSocket();
     await host.close();
   }
-  assert.equal(host.executedLines.length, 2);
-  const [stdio, http] = host.executedLines.map((line) => JSON.parse(line.slice("/mcp add ".length)));
+  assert.equal(host.executedLines.length, 3);
+  const [stdio, http] = host.executedLines
+    .filter((line) => line.startsWith("/mcp add"))
+    .map((line) => JSON.parse(line.slice("/mcp add ".length)));
   assert.deepEqual(stdio, {
     name: "idea",
     transport: { command: "/opt/idea/mcp", args: ["--stdio"], env: { TOKEN: "t" }, cwd: "/tmp/proj" },
@@ -370,6 +372,30 @@ test("session/new attaches mcpServers through the broker command", async () => {
     name: "gw",
     transport: { type: "streamable-http", url: "http://127.0.0.1:9/mcp", headers: { "X-Key": "k" } },
   });
+});
+
+test("permission preset is a config option and switches via /permission", async () => {
+  const host = await fakeHost();
+  const web = new WebClient({ base: host.base, cookie: "dsh-auth-test=ok" });
+  try {
+    await client().connectWith(attach(agent({ name: "dsh-web-acp" }), web), async (ctx) => {
+      await ctx.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+      const created = await ctx.request(AGENT_METHODS.session_new, { cwd: "/tmp/proj", mcpServers: [] });
+      const permission = created.configOptions.find((option) => option.id === "permission");
+      assert.equal(permission.currentValue, "workspace-write");
+      assert.deepEqual(permission.options.map((option) => option.value), ["read-only", "workspace-write", "danger-full-access", "auto"]);
+      const updated = await ctx.request(AGENT_METHODS.session_set_config_option, {
+        sessionId: created.sessionId,
+        configId: "permission",
+        value: "danger-full-access",
+      });
+      assert.equal(updated.configOptions.find((option) => option.id === "permission").currentValue, "danger-full-access");
+    });
+  } finally {
+    web.closeSocket();
+    await host.close();
+  }
+  assert.ok(host.executedLines.includes("/permission danger-full-access"));
 });
 
 test("set_mode drives the host /plan command", async () => {
@@ -400,7 +426,7 @@ test("set_mode drives the host /plan command", async () => {
     web.closeSocket();
     await host.close();
   }
-  assert.deepEqual(host.executedLines, ["/plan"]);
+  assert.deepEqual(host.executedLines.filter((line) => !line.startsWith("/permission")), ["/plan"]);
   assert.deepEqual(updates.map((update) => update.sessionUpdate), ["current_mode_update"]);
   assert.equal(updates[0].currentModeId, "plan");
 });
@@ -491,10 +517,22 @@ function fakeHost(options = {}) {
           return;
         }
         state.executedLines = [...(state.executedLines ?? []), args.line];
-        value = {
-          commandId: "cmd-1",
-          result: { kind: "success", text: args.line === "/plan" ? "Plan mode on." : "Plan mode off." },
-        };
+        if (args.line.startsWith("/permission")) {
+          const name = args.line.slice("/permission".length).trim();
+          if (!name) {
+            value = { commandId: "cmd-1", result: { kind: "success", text: `current preset ${state.permission ?? "workspace-write"} (available: read-only, workspace-write, danger-full-access, auto)` } };
+          } else if (["read-only", "workspace-write", "danger-full-access", "auto"].includes(name)) {
+            state.permission = name;
+            value = { commandId: "cmd-1", result: { kind: "success", text: `preset ${name}` } };
+          } else {
+            value = { commandId: "cmd-1", result: { kind: "error", text: `unknown preset "${name}"` } };
+          }
+        } else {
+          value = {
+            commandId: "cmd-1",
+            result: { kind: "success", text: args.line === "/plan" ? "Plan mode on." : "Plan mode off." },
+          };
+        }
       } else if (method === "session/list") {
         // 宿主契约：session/list 的参数键是 `_request`，不是 `request`。
         const listRequest = body?.payload?.args?._request;
