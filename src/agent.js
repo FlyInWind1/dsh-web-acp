@@ -7,16 +7,17 @@ import { AGENT_METHODS, CLIENT_METHODS, RequestError } from "@agentclientprotoco
 import { watchApprovals } from "./approval.js";
 import { createDrive, promptContent } from "./drive.js";
 import { replayHistory } from "./history.js";
-import { attachMcpServers } from "./mcp.js";
+import { attachMcpServers, detachMcpServers } from "./mcp.js";
 import { applyConfig, configOptions, currentSelection } from "./models.js";
 import { parsePermissionOutput, permissionOption } from "./permissions.js";
 
 /**
  * @param {import("@agentclientprotocol/sdk").AgentApp} app
  * @param {import("./web.js").WebClient} web
+ * @param {{ unmountAllMcp?: () => Promise<void> }} [hooks] 输出参数：进程退出前的清理入口
  */
-export function attach(app, web) {
-  /** @type {Map<string, { cwd: string, feed: Feed | null, replayed: boolean, modeId?: string, materialized: boolean, mcpServers?: Array }>} */
+export function attach(app, web, hooks = {}) {
+  /** @type {Map<string, { cwd: string, feed: Feed | null, replayed: boolean, modeId?: string, materialized: boolean, mcpServers?: Array, mountedMcp?: string[] }>} */
   const sessions = new Map();
 
   function remember(sessionId, cwd) {
@@ -111,9 +112,25 @@ export function attach(app, web) {
 
   async function mountMcp(sessionId, mcpServers, cwd) {
     if (!mcpServers?.length) return;
-    const { failures } = await attachMcpServers(web, sessionId, mcpServers, cwd);
+    const { attached, failures } = await attachMcpServers(web, sessionId, mcpServers, cwd);
     if (failures.length > 0) console.error(`mcp attach: ${failures.join("; ")}`);
+    if (attached.length > 0) {
+      const record = sessions.get(sessionId);
+      if (record) record.mountedMcp = [...(record.mountedMcp ?? []), ...attached];
+    }
   }
+
+  /** 反注册本连接在某会话挂载的 MCP server（IDEA 的 stdio 桥随进程死掉后留着只会重连报错）。 */
+  async function unmountMcp(sessionId) {
+    const names = sessions.get(sessionId)?.mountedMcp;
+    if (names?.length) await detachMcpServers(web, sessionId, names);
+  }
+
+  /** 连接关闭 / 进程退出前，把本进程挂载过的全部反注册。 */
+  async function unmountAllMcp() {
+    for (const sessionId of [...sessions.keys()]) await unmountMcp(sessionId);
+  }
+  hooks.unmountAllMcp = unmountAllMcp;
 
   /** 跑一条宿主 `/permission` 命令（无 request 包装的 commands/execute）。 */
   async function runPermission(sessionId, arg) {
@@ -263,7 +280,8 @@ export function attach(app, web) {
       });
       return { configOptions: configOptions(catalog, selected?.selected ?? next) };
     })
-    .onRequest(AGENT_METHODS.session_close, ({ params }) => {
+    .onRequest(AGENT_METHODS.session_close, async ({ params }) => {
+      await unmountMcp(params.sessionId);
       sessions.get(params.sessionId)?.feed?.stop();
       sessions.delete(params.sessionId);
       return {};

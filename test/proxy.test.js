@@ -389,6 +389,30 @@ test("session/new defers mcpServers attach until the first prompt", async () => 
   });
 });
 
+test("session/close detaches the servers this connection mounted", async () => {
+  const host = await fakeHost();
+  const web = new WebClient({ base: host.base, cookie: "dsh-auth-test=ok" });
+  try {
+    await client().connectWith(attach(agent({ name: "dsh-web-acp" }), web), async (ctx) => {
+      await ctx.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+      const created = await ctx.request(AGENT_METHODS.session_new, {
+        cwd: "/tmp/proj",
+        mcpServers: [{ name: "idea", command: "/opt/idea/mcp", args: [], env: [] }],
+      });
+      await ctx.request(AGENT_METHODS.session_prompt, {
+        sessionId: created.sessionId,
+        prompt: [{ type: "text", text: "hi" }],
+      });
+      assert.ok(!host.executedLines.includes("/mcp remove idea"));
+      await ctx.request(AGENT_METHODS.session_close, { sessionId: created.sessionId });
+    });
+  } finally {
+    web.closeSocket();
+    await host.close();
+  }
+  assert.ok(host.executedLines.includes("/mcp remove idea"));
+});
+
 test("permission preset is a config option and switches via /permission", async () => {
   const host = await fakeHost();
   const web = new WebClient({ base: host.base, cookie: "dsh-auth-test=ok" });

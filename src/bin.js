@@ -19,4 +19,27 @@ const stream = ndJsonStream(
   Readable.toWeb(process.stdin),
 );
 
-attach(agent({ name: "dsh-web-acp" }), web).connect(stream);
+const hooks = {};
+const connection = attach(agent({ name: "dsh-web-acp" }), web, hooks).connect(stream);
+
+// IDEA 关闭聊天 = 对本进程发 SIGTERM。反注册本进程挂载的 MCP server，
+// 否则宿主里的 mcp-client 会对着已死的 stdio 桥无限重连报错。
+let closing = false;
+async function cleanup() {
+  if (closing) return;
+  closing = true;
+  const deadline = new Promise((resolve) => {
+    const timer = setTimeout(resolve, 3000);
+    timer.unref?.();
+  });
+  await Promise.race([hooks.unmountAllMcp() ?? Promise.resolve(), deadline]).catch(() => {});
+  web.closeSocket();
+}
+
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+  process.on(signal, () => {
+    void cleanup().finally(() => process.exit(0));
+  });
+}
+// stdin 关闭（连接断开）也清理，之后让事件循环自然退出。
+void connection.closed?.then(() => cleanup());

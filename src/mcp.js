@@ -60,3 +60,20 @@ export async function attachMcpServers(web, sessionId, mcpServers, cwd) {
   }
   return { attached, failures };
 }
+
+/**
+ * 反注册会话挂载的 MCP server。IDEA 的 stdio 桥随进程退出而死，
+ * 宿主里的 mcp-client 留着只会对着死端点无限重连报错。
+ * @param {import("./web.js").WebClient} web
+ * @param {string} sessionId
+ * @param {string[]} names
+ */
+export async function detachMcpServers(web, sessionId, names) {
+  for (const name of names) {
+    await web.callArgs("commands/execute", {
+      agentId: sessionId,
+      line: `/mcp remove ${name}`,
+      submittedAttachments: [],
+    }).catch(() => {});
+  }
+}
