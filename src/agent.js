@@ -9,6 +9,7 @@ import { createDrive, promptContent } from "./drive.js";
 import { replayHistory } from "./history.js";
 import { attachMcpServers } from "./mcp.js";
 import { applyConfig, configOptions, currentSelection } from "./models.js";
+import { parsePermissionOutput, permissionOption } from "./permissions.js";
 
 /**
  * @param {import("@agentclientprotocol/sdk").AgentApp} app
@@ -80,12 +81,41 @@ export function attach(app, web) {
     if (failures.length > 0) console.error(`mcp attach: ${failures.join("; ")}`);
   }
 
+  /** 跑一条宿主 `/permission` 命令（无 request 包装的 commands/execute）。 */
+  async function runPermission(sessionId, arg) {
+    const value = await web.callArgs("commands/execute", {
+      agentId: sessionId,
+      line: arg ? `/permission ${arg}` : "/permission",
+      submittedAttachments: [],
+    });
+    if (value?.result?.kind === "error") throw new Error(value.result.text);
+    return value?.result?.text ?? "";
+  }
+
+  async function permissionState(sessionId) {
+    try {
+      return parsePermissionOutput(await runPermission(sessionId));
+    } catch (error) {
+      console.error(`permission: ${error instanceof Error ? error.message : error}`);
+      return null;
+    }
+  }
+
+  /** 完整 config options（model + reasoning + permission），供响应与回读。 */
+  async function allConfigOptions(sessionId) {
+    const catalog = await web.callArgs("session/modelCatalog", {});
+    const projection = await web.call("session/projections", { sessionId }).catch(() => null);
+    const options = configOptions(catalog, currentSelection(catalog, projection));
+    const permission = permissionOption(await permissionState(sessionId));
+    if (permission) options.push(permission);
+    return options;
+  }
+
   async function sessionConfig(sessionId) {
     let projection = null;
     try {
-      const catalog = await web.callArgs("session/modelCatalog", {});
       projection = await web.call("session/projections", { sessionId }).catch(() => null);
-      const options = configOptions(catalog, currentSelection(catalog, projection));
+      const options = await allConfigOptions(sessionId);
       const modes = modesFor(projection);
       const record = sessions.get(sessionId);
       if (record) record.modeId = modes.currentModeId;
@@ -177,6 +207,13 @@ export function attach(app, web) {
       return {};
     })
     .onRequest(AGENT_METHODS.session_set_config_option, async ({ params }) => {
+      if (params.configId === "permission") {
+        if (typeof params.value !== "string") {
+          throw RequestError.invalidParams(void 0, "permission requires a select value");
+        }
+        await runPermission(params.sessionId, params.value);
+        return { configOptions: await allConfigOptions(params.sessionId) };
+      }
       const catalog = await web.callArgs("session/modelCatalog", {});
       const projection = await web.call("session/projections", { sessionId: params.sessionId }).catch(() => null);
       const next = applyConfig(catalog, currentSelection(catalog, projection), params.configId, params.value);
