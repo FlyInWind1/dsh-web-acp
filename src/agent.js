@@ -80,7 +80,9 @@ export function attach(app, web) {
       return { sessionId: value.sessionId, ...await sessionConfig(value.sessionId) };
     })
     .onRequest(AGENT_METHODS.session_list, async ({ params }) => {
-      const value = await web.call("session/list", params.cursor ? { cursor: params.cursor } : {});
+      const value = await web.callArgs("session/list", {
+        _request: params.cursor ? { cursor: params.cursor } : {},
+      });
       const sessionsOut = [];
       for (const item of value?.items ?? []) {
         if (item.origin === "subagent" || item.parentSessionId) continue;

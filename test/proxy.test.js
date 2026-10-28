@@ -199,6 +199,7 @@ test("ACP prompt round-trip forwards one web turn", async () => {
   assert.equal(host.prompt?.mode, "queue");
   assert.equal(host.prompt?.content[0].text, "hi");
   assert.equal(host.prompt?.payloadShape, "args.request");
+  assert.equal(host.listPayloadShape, "args._request");
   assert.deepEqual(updates.map((update) => update.sessionUpdate), [
     "agent_message_chunk",
     "tool_call",
@@ -414,12 +415,15 @@ function fakeHost(options = {}) {
         state.answered = body.payload.args;
         resolveAnswer(state.answered);
         value = {};
-      } else if (!request || body?.payload?.request) {
-        res.writeHead(400);
-        res.end("bad envelope");
-        return;
-      } else if (method === "session/create") value = { sessionId: "session-1" };
-      else if (method === "session/list") {
+      } else if (method === "session/list") {
+        // 宿主契约：session/list 的参数键是 `_request`，不是 `request`。
+        const listRequest = body?.payload?.args?._request;
+        if (!listRequest || request) {
+          res.writeHead(400);
+          res.end("bad envelope");
+          return;
+        }
+        state.listPayloadShape = "args._request";
         value = {
           items: [{
             sessionId: "session-1",
@@ -433,7 +437,12 @@ function fakeHost(options = {}) {
             updatedAt: 1,
           }],
         };
-      } else if (method === "session/prompt") {
+      } else if (!request || body?.payload?.request) {
+        res.writeHead(400);
+        res.end("bad envelope");
+        return;
+      } else if (method === "session/create") value = { sessionId: "session-1" };
+      else if (method === "session/prompt") {
         state.prompt = { ...request, payloadShape: "args.request" };
         replyTurn(follows, request.requestId);
         value = { accepted: true };
