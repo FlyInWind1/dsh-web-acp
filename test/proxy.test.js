@@ -274,6 +274,9 @@ test("model catalog becomes a client model selector", () => {
   const options = configOptions(catalog, selection);
   assert.equal(options[0].currentValue, modelValue("buddy", "deepseek-v4.1-flash"));
   assert.equal(options[0].options[0].options.length, 2);
+  // 同名模型可能来自多家供应商，option 名字必须带供应商后缀。
+  assert.equal(options[0].options[0].options[0].name, "DeepSeek V4 Flash (Buddy)");
+  assert.equal(options[0].options[0].options[1].name, "DeepSeek V4.1 Flash (Buddy)");
   assert.equal(options[1], undefined);
   const next = applyConfig(catalog, selection, "model", modelValue("buddy", "deepseek-v4-flash"));
   assert.deepEqual(next, { provider: "buddy", model: "deepseek-v4-flash" });

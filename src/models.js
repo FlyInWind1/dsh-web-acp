@@ -40,9 +40,11 @@ export function configOptions(catalog, selection) {
     for (const model of group.models ?? []) {
       const value = modelValue(group.id, model.id);
       known.add(value);
+      // 同一个模型在多家 vendor 里都有，把 vendor 拼进 option 名字里让客户端下拉能区分。
+      const providerLabel = group.name || group.id;
       options.push({
         value,
-        name: model.name,
+        name: `${model.name} (${providerLabel})`,
         ...(model.description ? { description: model.description } : {}),
       });
     }
@@ -55,7 +57,10 @@ export function configOptions(catalog, selection) {
       group = { group: selection.provider, name: selection.provider, options: [] };
       groups.push(group);
     }
-    group.options.unshift({ value: currentValue, name: selection.model });
+    group.options.unshift({
+      value: currentValue,
+      name: `${selection.model} (${selection.provider})`,
+    });
   }
   const options = [{
     id: MODEL_CONFIG_ID,
