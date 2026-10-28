@@ -174,6 +174,8 @@ test("ACP prompt round-trip forwards one web turn", async () => {
         mcpServers: [],
       });
       assert.equal(created.sessionId, "session-1");
+      assert.equal(created.modes.currentModeId, "default");
+      assert.deepEqual(created.modes.availableModes.map((mode) => mode.id), ["default", "plan"]);
       const listed = await ctx.request(AGENT_METHODS.session_list, {});
       assert.equal(listed.sessions.length, 1);
       assert.equal(listed.sessions[0].title, "已有会话");
@@ -340,6 +342,39 @@ test("approval request becomes a client permission dialog", async () => {
   assert.deepEqual(host.answered.outcome, { kind: "result", value: "allowed-once" });
 });
 
+test("set_mode drives the host /plan command", async () => {
+  const host = await fakeHost();
+  const web = new WebClient({ base: host.base, cookie: "dsh-auth-test=ok" });
+  const updates = [];
+  const app = client().onNotification(CLIENT_METHODS.session_update, ({ params }) => {
+    updates.push(params.update);
+  });
+  try {
+    await app.connectWith(attach(agent({ name: "dsh-web-acp" }), web), async (ctx) => {
+      await ctx.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+      const created = await ctx.request(AGENT_METHODS.session_new, { cwd: "/tmp/proj", mcpServers: [] });
+      assert.equal(created.modes.currentModeId, "default");
+      await ctx.request(AGENT_METHODS.session_set_mode, {
+        sessionId: created.sessionId,
+        modeId: "plan",
+      });
+      await ctx.request(AGENT_METHODS.session_set_mode, {
+        sessionId: created.sessionId,
+        modeId: "bogus",
+      }).then(
+        () => assert.fail("unknown mode must reject"),
+        (error) => assert.match(String(error.message ?? error), /unknown mode/),
+      );
+    });
+  } finally {
+    web.closeSocket();
+    await host.close();
+  }
+  assert.deepEqual(host.executedLines, ["/plan"]);
+  assert.deepEqual(updates.map((update) => update.sessionUpdate), ["current_mode_update"]);
+  assert.equal(updates[0].currentModeId, "plan");
+});
+
 function record(seq, type, data) {
   return { type: "event", event: { seq, type, time: 1, data } };
 }
@@ -354,6 +389,7 @@ function fakeHost(options = {}) {
     answered: null,
     selected: null,
     modelCatalogArgs: null,
+    executedLines: [],
     base: "",
     close: async () => {},
     eventsReady: new Promise((resolve) => {
@@ -415,6 +451,20 @@ function fakeHost(options = {}) {
         state.answered = body.payload.args;
         resolveAnswer(state.answered);
         value = {};
+      } else if (method === "commands/execute") {
+        // 宿主契约：commands/execute 的参数是顶层 agentId/line/submittedAttachments。
+        const args = body?.payload?.args;
+        if (args?.agentId !== "session-1" || typeof args?.line !== "string"
+          || !Array.isArray(args.submittedAttachments) || request) {
+          res.writeHead(400);
+          res.end("bad envelope");
+          return;
+        }
+        state.executedLines = [...(state.executedLines ?? []), args.line];
+        value = {
+          commandId: "cmd-1",
+          result: { kind: "success", text: args.line === "/plan" ? "Plan mode on." : "Plan mode off." },
+        };
       } else if (method === "session/list") {
         // 宿主契约：session/list 的参数键是 `_request`，不是 `request`。
         const listRequest = body?.payload?.args?._request;

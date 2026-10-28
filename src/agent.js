@@ -3,7 +3,7 @@
  * 每个打开的会话共用一条 follow 流（Feed），历史回放、本轮 drive、批准监听都从这里串起来。
  */
 import crypto from "node:crypto";
-import { AGENT_METHODS, CLIENT_METHODS } from "@agentclientprotocol/sdk";
+import { AGENT_METHODS, CLIENT_METHODS, RequestError } from "@agentclientprotocol/sdk";
 import { watchApprovals } from "./approval.js";
 import { createDrive, promptContent } from "./drive.js";
 import { replayHistory } from "./history.js";
@@ -14,7 +14,7 @@ import { applyConfig, configOptions, currentSelection } from "./models.js";
  * @param {import("./web.js").WebClient} web
  */
 export function attach(app, web) {
-  /** @type {Map<string, { cwd: string, feed: Feed | null, replayed: boolean }>} */
+  /** @type {Map<string, { cwd: string, feed: Feed | null, replayed: boolean, modeId?: string }>} */
   const sessions = new Map();
 
   function remember(sessionId, cwd) {
@@ -28,9 +28,22 @@ export function attach(app, web) {
     return created;
   }
 
-  async function replay(record, sessionId, client) {
-    const feed = record.feed ?? new Feed(web, sessionId);
+  function ensureFeed(record, sessionId, client) {
+    if (record.feed) return record.feed;
+    const feed = new Feed(web, sessionId, (active) => {
+      const modeId = active ? "plan" : "default";
+      record.modeId = modeId;
+      client.notify(CLIENT_METHODS.session_update, {
+        sessionId,
+        update: { sessionUpdate: "current_mode_update", currentModeId: modeId },
+      }).catch(() => {});
+    });
     record.feed = feed;
+    return feed;
+  }
+
+  async function replay(record, sessionId, client) {
+    const feed = ensureFeed(record, sessionId, client);
     const snapshot = await feed.ready;
     if (record.replayed) return;
     record.replayed = true;
@@ -45,15 +58,37 @@ export function attach(app, web) {
     }
   }
 
+  // ACP mode ↔ DSH plan 模式：宿主端用 commands/execute 跑 `/plan`、`/plan off`，
+  // 权威状态在投影 values.plan.active。没有 availableModes 时 IDEA 会把模式
+  // 切换当成"需要新 chat"，所以必须声明。
+  const AVAILABLE_MODES = [
+    { id: "default", name: "Agent", description: "Full tool access" },
+    { id: "plan", name: "Plan", description: "Read-only planning until the plan is approved" },
+  ];
+
+  function modesFor(projection) {
+    return {
+      currentModeId: projection?.values?.plan?.active === true ? "plan" : "default",
+      availableModes: AVAILABLE_MODES,
+    };
+  }
+
   async function sessionConfig(sessionId) {
+    let projection = null;
     try {
       const catalog = await web.callArgs("session/modelCatalog", {});
-      const projection = await web.call("session/projections", { sessionId }).catch(() => null);
+      projection = await web.call("session/projections", { sessionId }).catch(() => null);
       const options = configOptions(catalog, currentSelection(catalog, projection));
-      return options.length > 0 ? { configOptions: options } : {};
+      const modes = modesFor(projection);
+      const record = sessions.get(sessionId);
+      if (record) record.modeId = modes.currentModeId;
+      return {
+        modes,
+        ...(options.length > 0 ? { configOptions: options } : {}),
+      };
     } catch (error) {
       console.error(`model catalog: ${error instanceof Error ? error.message : error}`);
-      return {};
+      return { modes: modesFor(projection) };
     }
   }
 
@@ -110,6 +145,26 @@ export function attach(app, web) {
       await replay(record, params.sessionId, client);
       return sessionConfig(params.sessionId);
     })
+    .onRequest(AGENT_METHODS.session_set_mode, async ({ params, client }) => {
+      if (params.modeId !== "default" && params.modeId !== "plan") {
+        throw RequestError.invalidParams(void 0, `unknown mode: ${params.modeId}`);
+      }
+      const record = remember(params.sessionId, "");
+      // 宿主端点参数是顶层 agentId/line/submittedAttachments（无 request 包装）。
+      await web.callArgs("commands/execute", {
+        agentId: params.sessionId,
+        line: params.modeId === "plan" ? "/plan" : "/plan off",
+        submittedAttachments: [],
+      });
+      record.modeId = params.modeId;
+      // feed 可能还没开（没 prompt 过），直接通知一次；
+      // 模型自己经 exit_plan_mode 退出时由 Feed 的 plan/mode 钩子通知。
+      client.notify(CLIENT_METHODS.session_update, {
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "current_mode_update", currentModeId: params.modeId },
+      }).catch(() => {});
+      return {};
+    })
     .onRequest(AGENT_METHODS.session_set_config_option, async ({ params }) => {
       const catalog = await web.callArgs("session/modelCatalog", {});
       const projection = await web.call("session/projections", { sessionId: params.sessionId }).catch(() => null);
@@ -127,8 +182,7 @@ export function attach(app, web) {
     })
     .onRequest(AGENT_METHODS.session_prompt, async ({ params, client, signal }) => {
       const record = remember(params.sessionId, "");
-      const feed = record.feed ?? new Feed(web, params.sessionId);
-      record.feed = feed;
+      const feed = ensureFeed(record, params.sessionId, client);
       await feed.ready;
       const requestId = crypto.randomUUID();
       const drive = createDrive({
@@ -168,12 +222,14 @@ class Feed {
   /**
    * @param {import("./web.js").WebClient} web
    * @param {string} sessionId
+   * @param {((active: boolean) => void) | null} [onPlanMode] 宿主 plan/mode 事件的回调
    */
-  constructor(web, sessionId) {
+  constructor(web, sessionId, onPlanMode = null) {
     this.cursor = 0;
     this.snapshot = null;
     this.drives = new Set();
     this.stopped = false;
+    this.onPlanMode = onPlanMode;
     this.abort = new AbortController();
     this.ready = new Promise((resolve, reject) => {
       this.resolveReady = resolve;
@@ -206,6 +262,9 @@ class Feed {
           }
         } else if (frame?.type === "event" && typeof frame.event?.seq === "number") {
           this.cursor = Math.max(this.cursor, frame.event.seq);
+          if (frame.event.type === "plan/mode" && this.onPlanMode) {
+            this.onPlanMode(frame.event.data?.active === true);
+          }
         }
         for (const drive of this.drives) drive.push(frame);
       }
